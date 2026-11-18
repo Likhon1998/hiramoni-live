@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600;1,700&family=Great+Vibes&family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Bengali:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        // Available before Vite loads — prevents CSRF mismatch on fast register/login/checkout.
+        (function () {
+            window.syncCsrfToken = window.syncCsrfToken || function (tokenFromServer) {
+                const meta = document.head.querySelector('meta[name="csrf-token"]');
+                const token = tokenFromServer || meta?.content;
+                if (!token) return null;
+                if (meta) meta.content = token;
+                document.querySelectorAll('input[name="_token"]').forEach((input) => { input.value = token; });
+                return token;
+            };
+            window.currentCsrfToken = window.currentCsrfToken || function () {
+                return document.head.querySelector('meta[name="csrf-token"]')?.content || '';
+            };
+            window.refreshCsrfToken = window.refreshCsrfToken || async function () {
+                try {
+                    const res = await fetch(@json(route('csrf.token')), {
+                        method: 'GET',
+                        credentials: 'same-origin',
+                        headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
+                        cache: 'no-store',
+                    });
+                    if (!res.ok) return window.syncCsrfToken();
+                    const data = await res.json();
+                    return window.syncCsrfToken(data?.csrf_token);
+                } catch (e) {
+                    return window.syncCsrfToken();
+                }
+            };
+            window.fetchJsonWithCsrf = window.fetchJsonWithCsrf || async function (url, options = {}, retried = false) {
+                const method = (options.method || 'GET').toUpperCase();
+                const headers = {
+                    Accept: 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...(options.headers || {}),
+                };
+                if (method !== 'GET' && method !== 'HEAD') {
+                    if (!headers['Content-Type'] && !(options.body instanceof FormData)) {
+                        headers['Content-Type'] = 'application/json';
+                    }
+                    headers['X-CSRF-TOKEN'] = window.currentCsrfToken();
+                }
+                const res = await fetch(url, { credentials: 'same-origin', ...options, method, headers });
+                if (res.status === 419 && !retried) {
+                    let token = null;
+                    try { token = (await res.clone().json())?.csrf_token || null; } catch (e) {}
+                    if (token) window.syncCsrfToken(token);
+                    else await window.refreshCsrfToken();
+                    return window.fetchJsonWithCsrf(url, options, true);
+                }
+                return res;
+            };
+        })();
+    </script>
+    <title>@yield('title', $settings->store_name ?? config('app.name', 'Hira Moni'))</title>
+    @hasSection('meta')
+        @yield('meta')
+    @else
+        @php
+            $defaultMetaDescription = \Illuminate\Support\Str::limit(
+                trim(strip_tags($__env->yieldContent('meta_description'))) ?: trim((string) ($settings->footer_tagline ?? '')),
+                160,
+                '…'
+            );
+            $defaultOgImage = trim($__env->yieldContent('og_image'));
+            if ($defaultOgImage === '' && ! empty($settings->logo_path)) {
+                $defaultOgImage = public_storage_url($settings->logo_path);
+            }
+            if ($defaultOgImage === '' && ! empty($settings->favicon_path)) {
+                $defaultOgImage = public_storage_url($settings->favicon_path);
+            }
+            if ($defaultOgImage === '') {
+                $defaultOgImage = asset('favicon.svg');
+            }
+            if ($defaultOgImage !== '' && ! str_starts_with($defaultOgImage, 'http')) {
+                $defaultOgImage = url($defaultOgImage);
+            }
+            $defaultMetaDescription = $defaultMetaDescription !== ''
+                ? $defaultMetaDescription
+                : 'Premium cosmetics & skincare for your natural glow — shop beauty essentials at '.($settings->store_name ?? config('app.name', 'Hira Moni')).'.';
+        @endphp
+        @if($defaultMetaDescription !== '')
+            <meta name="description" content="{{ $defaultMetaDescription }}">
+        @endif
+        <link rel="canonical" href="{{ url()->current() }}">
+        <meta property="og:type" content="@yield('og_type', 'website')">
+        <meta property="og:site_name" content="{{ $settings->store_name ?? config('app.name') }}">
+        <meta property="og:title" content="@yield('title', $settings->store_name ?? config('app.name', 'Hira Moni'))">
+        <meta property="og:url" content="{{ url()->current() }}">
+        @if($defaultMetaDescription !== '')
+            <meta property="og:description" content="{{ $defaultMetaDescription }}">
+        @endif
+        @if($defaultOgImage !== '')
+            <meta property="og:image" content="{{ $defaultOgImage }}">
+        @endif
+        <meta name="twitter:card" content="{{ $defaultOgImage !== '' ? 'summary_large_image' : 'summary' }}">
+    @endif
+    @include('partials.favicon', ['settings' => $settings ?? null])
+    @php
+        $storefrontUser = auth('web')->check() && auth('web')->user()->isStorefrontCustomer()
+            ? [
+                'name' => auth('web')->user()->name,
+                'email' => auth('web')->user()->email,
+                'phone' => auth('web')->user()->customerProfile?->phone ?? '',
+                'address' => auth('web')->user()->customerProfile?->address ?? '',
+            ]
+            : null;
+        if (! isset($deliveryConfig) || ! is_array($deliveryConfig)) {
+            try {
+                $deliveryConfig = app(\App\Services\DeliveryChargeService::class)->publicConfig();
+            } catch (\Throwable $e) {
+                $deliveryConfig = [
+                    'zones' => [['code' => 'inside_dhaka', 'name' => 'Inside Dhaka', 'fee' => 60, 'note' => null, 'is_default' => true]],
+                    'default_zone' => 'inside_dhaka',
+                    'inside_dhaka' => 60,
+                    'outside_dhaka' => 120,
+                    'free_enabled' => false,
+                    'free_min_amount' => 0,
+                    'cod_enabled' => true,
+                    'confirmation_enabled' => false,
+                    'confirmation_amount' => 0,
+                    'currency_symbol' => $settings->currency_symbol ?? '৳',
+                ];
+            }
+        }
+    @endphp
+    <script>
+        function readStorefrontList(key) {
+            try {
+                const raw = localStorage.getItem(key);
+                const parsed = raw ? JSON.parse(raw) : [];
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function headerSearch(suggestUrl, shopBaseUrl, currencySymbol) {
+            return {
+                q: @json(request('search', '')),
+                category: @json(request('category', '')),
+                open: false,
+                loading: false,
+                products: [],
+                mode: 'best',
+                activeIndex: -1,
+                currency: currencySymbol || '৳',
+                _req: 0,
+                get shopUrl() {
+                    const params = new URLSearchParams();
+                    if (this.q) params.set('search', this.q);
+                    if (this.category) params.set('category', this.category);
+                    const qs = params.toString();
+                    return qs ? `${shopBaseUrl}?${qs}` : shopBaseUrl;
+                },
+                onFocus() {
+                    this.open = true;
+                    this.fetchSuggestions();
+                },
+                async fetchSuggestions() {
+                    this.open = true;
+                    this.loading = true;
+                    this.activeIndex = -1;
+                    const req = ++this._req;
+                    try {
+                        const params = new URLSearchParams({
+                            q: this.q || '',
+                            category: this.category || '',
+                            limit: '8',
+                        });
+                        const res = await fetch(`${suggestUrl}?${params.toString()}`, {
+                            headers: { 'Accept': 'application/json' },
+                        });
+                        const data = await res.json();
+                        if (req !== this._req) return;
+                        this.products = Array.isArray(data.products) ? data.products : [];
+                        this.mode = data.mode || (this.q ? 'search' : 'best');
+                    } catch (e) {
+                        if (req !== this._req) return;
+                        this.products = [];
+                    } finally {
+                        if (req === this._req) this.loading = false;
+                    }
+                },
+                move(step) {
+                    if (!this.products.length) return;
+                    this.open = true;
+                    const len = this.products.length;
+                    this.activeIndex = (this.activeIndex + step + len) % len;
+                },
+                onEnter(event) {
+                    if (this.open && this.activeIndex >= 0 && this.products[this.activeIndex]) {
+                        event.preventDefault();
+                        window.location.href = this.products[this.activeIndex].url;
+                    }
+                },
+            };
+        }
+        window.headerSearch = headerSearch;
+
+        function storefrontCart() {
+            return {
+                cart: readStorefrontList('gaget_cart'),
+                wishlist: readStorefrontList('gaget_wishlist'),
+                cartOpen: false,
+                cartBump: false,
+                cartSyncing: false,
+                cartSyncUrl: @json(route('website.cart.sync')),
+                checkoutOpen: false,
+                mobileOpen: false,
+                mobileCatsOpen: false,
+                mobileBrandsOpen: false,
+                checkoutStep: 'auth',
+                authPurpose: 'account',
+                authTab: 'login',
+                authLoading: false,
+                authMessage: '',
+                authMessageOk: false,
+                ordering: false,
+                orderMessage: '',
+                lastOrderId: null,
+                lastOrderInvoice: '',
+                lastOrderGuest: false,
+                lastTrackUrl: '',
+                redirectSeconds: 0,
+                _redirectTimer: null,
+                orderSuccess: false,
+                toastMessage: '',
+                toastVisible: false,
+                isLoggedIn: @json((bool) $storefrontUser),
+                currency: @json($settings->currency_symbol ?? '৳'),
+                deliveryConfig: @json($deliveryConfig),
+                checkout: {
+                    name: @json(data_get($storefrontUser, 'name', '')),
+                    phone: @json(data_get($storefrontUser, 'phone', '')),
+                    address: @json(data_get($storefrontUser, 'address', '')),
+                    zone: @json($deliveryConfig['default_zone'] ?? 'inside_dhaka'),
+                    payment_method: 'cash_on_delivery',
+                    payment_reference: '',
+                },
+                get deliveryZones() {
+                    const zones = (this.deliveryConfig || {}).zones;
+                    return Array.isArray(zones) && zones.length ? zones : [];
+                },
+                authLogin: { email: '', password: '' },
+                authRegister: { name: '', phone: '', email: '', password: '', address: '' },
+                get cartCount() { return this.cart.reduce((s, i) => s + (Number(i.qty) || 0), 0); },
+                get cartTotal() { return this.cart.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.qty) || 0), 0); },
+                get deliveryQuote() {
+                    const cfg = this.deliveryConfig || {};
+                    const subtotal = Number(this.cartTotal) || 0;
+                    const zones = this.deliveryZones;
+                    const zoneRow = zones.find((z) => z.code === this.checkout.zone)
+                        || zones.find((z) => z.is_default)
+                        || zones[0]
+                        || { code: this.checkout.zone, name: '', fee: 0 };
+                    const zone = zoneRow.code;
+                    const base = Number(zoneRow.fee) || 0;
+                    const freeMin = Number(cfg.free_min_amount) || 0;
+                    const isFree = !!cfg.free_enabled && subtotal + 0.009 >= freeMin;
+                    const deliveryFee = isFree ? 0 : Math.max(0, base);
+                    const grand = Math.round((subtotal + deliveryFee) * 100) / 100;
+                    let method = this.checkout.payment_method;
+                    const codOk = !!cfg.cod_enabled;
+                    const confOk = !!cfg.confirmation_enabled && Number(cfg.confirmation_amount) > 0.009;
+                    if (method === 'confirmation_charge' && !confOk) method = codOk ? 'cash_on_delivery' : 'confirmation_charge';
+                    if (method === 'cash_on_delivery' && !codOk && confOk) method = 'confirmation_charge';
+                    const confirmAmt = method === 'confirmation_charge'
+                        ? Math.min(grand, Math.max(0, Number(cfg.confirmation_amount) || 0))
+                        : 0;
+                    return {
+                        zone,
+                        zoneLabel: zoneRow.name,
+                        subtotal,
+                        baseFee: base,
+                        deliveryFee,
+                        isFree,
+                        freeReason: isFree ? ('Free delivery over ' + (cfg.currency_symbol || this.currency) + Number(freeMin).toLocaleString()) : null,
+                        grandTotal: grand,
+                        paymentMethod: method,
+                        confirmationAmount: confirmAmt,
+                        amountDueLater: Math.max(0, Math.round((grand - confirmAmt) * 100) / 100),
+                        codEnabled: codOk,
+                        confirmationEnabled: confOk,
+                    };
+                },
+                get wishlistCount() { return this.wishlist.length; },
+                init() {
+                    this.bindCheckoutViewport();
+                    this.syncCart({ silent: true });
+                    if (!this.isLoggedIn) this.restoreGuestContact();
+                    try {
+                        const params = new URLSearchParams(window.location.search);
+                        if (params.get('signin') === '1' || params.get('signin') === 'true') {
+                            const tab = params.get('tab') === 'register' ? 'register' : 'login';
+                            this.$nextTick(() => this.openSignIn(tab));
+                            params.delete('signin');
+                            params.delete('tab');
+                            const qs = params.toString();
+                            const next = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+                            window.history.replaceState({}, '', next);
+                        }
+                    } catch (e) {}
+                },
+                // Persist ids + qty only — display price/stock always come from /cart/sync.
+                bindCheckoutViewport() {
+                    this._onViewport = () => {
+                        const root = document.documentElement;
+                        const vv = window.visualViewport;
+                        if (vv) {
+                            root.style.setProperty('--vv-height', Math.round(vv.height) + 'px');
+                            root.style.setProperty('--vv-offset-top', Math.round(vv.offsetTop) + 'px');
+                            const covered = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+                            root.classList.toggle('is-keyboard-open', covered > 80);
+                        } else {
+                            root.style.setProperty('--vv-height', window.innerHeight + 'px');
+                            root.style.setProperty('--vv-offset-top', '0px');
+                            root.classList.remove('is-keyboard-open');
+                        }
+                    };
+                    this._onViewport();
+                    window.visualViewport?.addEventListener('resize', this._onViewport);
+                    window.visualViewport?.addEventListener('scroll', this._onViewport);
+                    window.addEventListener('resize', this._onViewport);
+                },
+                destroy() {
+                    window.visualViewport?.removeEventListener('resize', this._onViewport);
+                    window.visualViewport?.removeEventListener('scroll', this._onViewport);
+                    window.removeEventListener('resize', this._onViewport);
+                },
+                scrollCheckoutField(event) {
+                    const el = event.target;
+                    if (!el || !el.matches || !el.matches('input, textarea, select')) return;
+                    window.setTimeout(() => {
+                        try {
+                            el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+                        } catch (e) {}
+                    }, 350);
+                },
+                save() {
+                    const slim = this.cart.map((item) => ({
+                        id: Number(item.id),
+                        qty: Math.max(1, Number(item.qty) || 1),
+                    })).filter((item) => item.id > 0);
+                    localStorage.setItem('gaget_cart', JSON.stringify(slim));
+                },
+                saveWishlist() { localStorage.setItem('gaget_wishlist', JSON.stringify(this.wishlist)); },
+                async syncCart({ silent = false } = {}) {
+                    if (this.cartSyncing) return;
+                    const payload = this.cart
+                        .map((item) => ({
+                            id: Number(item.id),
+                            qty: Math.max(1, Number(item.qty) || 1),
+                        }))
+                        .filter((item) => item.id > 0);
+
+                    if (!payload.length) {
+                        this.cart = [];
+                        this.save();
+                        if (localStorage.getItem('bs_cart_synced')) {
+                            localStorage.removeItem('bs_cart_synced');
+                            this.csrfFetch(this.cartSyncUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                                body: JSON.stringify({ items: [] }),
+                            }).catch(() => {});
+                        }
+                        return;
+                    }
+
+                    const phone = String(this.checkout?.phone || '').trim();
+                    const contact = phone ? { name: String(this.checkout?.name || '').trim(), phone } : undefined;
+
+                    this.cartSyncing = true;
+                    try {
+                        const res = await this.csrfFetch(this.cartSyncUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                            },
+                            body: JSON.stringify({ items: payload, contact }),
+                        });
+                        localStorage.setItem('bs_cart_synced', '1');
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            if (!silent) this.flashToast(data.message || 'Could not refresh cart prices.');
+                            return;
+                        }
+                        this.cart = Array.isArray(data.items) ? data.items : [];
+                        this.save();
+                        if (!silent && Array.isArray(data.warnings) && data.warnings.length) {
+                            this.flashToast(data.warnings[0]);
+                        }
+                    } catch (e) {
+                        if (!silent) this.flashToast('Could not refresh cart. Please try again.');
+                    } finally {
+                        this.cartSyncing = false;
+                    }
+                },
+                addToCart(product, qty = 1, openDrawer = true) {
+                    if (!product || product.id === undefined || product.id === null) return;
+
+                    const id = Number(product.id);
+                    const amount = Math.max(1, Number(qty) || 1);
+                    const stockCap = Number(product.stock);
+                    const next = this.cart.map((item) => ({ ...item }));
+                    const existing = next.find((item) => Number(item.id) === id);
+                    const currentQty = existing ? (Number(existing.qty) || 0) : 0;
+                    let desired = currentQty + amount;
+
+                    if (Number.isFinite(stockCap) && stockCap >= 0) {
+                        if (stockCap < 1) {
+                            this.flashToast('This item is out of stock.');
+                            return;
+                        }
+                        if (desired > stockCap) {
+                            desired = stockCap;
+                            this.flashToast('Only ' + stockCap + ' available.');
+                        }
+                    }
+
+                    if (existing) {
+                        existing.qty = desired;
+                        if (Number.isFinite(stockCap)) existing.stock = stockCap;
+                        if (product.name) existing.name = product.name;
+                        if (product.image) existing.image = product.image;
+                        if (product.price !== undefined) existing.price = Number(product.price) || existing.price;
+                    } else {
+                        next.push({
+                            id,
+                            name: product.name || 'Product',
+                            price: Number(product.price) || 0,
+                            image: product.image || '',
+                            qty: desired,
+                            stock: Number.isFinite(stockCap) ? stockCap : undefined,
+                        });
+                    }
+
+                    this.cart = next;
+                    this.save();
+                    this.bumpCart();
+                    if (openDrawer) {
+                        this.openCart();
+                    } else {
+                        this.syncCart({ silent: true });
+                    }
+                },
+                bumpCart() {
+                    this.cartBump = false;
+                    this.$nextTick(() => {
+                        this.cartBump = true;
+                        clearTimeout(this._cartBumpTimer);
+                        this._cartBumpTimer = setTimeout(() => { this.cartBump = false; }, 700);
+                    });
+                },
+                async openCart() {
+                    await this.syncCart({ silent: false });
+                    this.cartOpen = true;
+                    this.$nextTick(() => {
+                        const shell = document.querySelector('.gaget-cart-shell');
+                        const panel = document.querySelector('.gaget-cart-panel');
+                        if (shell) shell.classList.remove('is-closing');
+                        if (!panel) return;
+                        panel.classList.remove('is-enter');
+                        void panel.offsetWidth;
+                        panel.classList.add('is-enter');
+                    });
+                },
+                closeCart() {
+                    if (!this.cartOpen) return;
+                    const shell = document.querySelector('.gaget-cart-shell');
+                    if (shell) {
+                        shell.classList.add('is-closing');
+                        clearTimeout(this._cartCloseTimer);
+                        this._cartCloseTimer = setTimeout(() => {
+                            this.cartOpen = false;
+                            shell.classList.remove('is-closing');
+                        }, 300);
+                        return;
+                    }
+                    this.cartOpen = false;
+                },
+                updateQty(i, d) {
+                    const next = this.cart.map((item) => ({ ...item }));
+                    const row = next[i];
+                    if (!row) return;
+                    const stockCap = Number(row.stock);
+                    let qty = (Number(row.qty) || 0) + d;
+                    if (qty <= 0) {
+                        this.cart = next.filter((_, idx) => idx !== i);
+                        this.save();
+                        this.syncCart({ silent: true });
+                        return;
+                    }
+                    if (Number.isFinite(stockCap) && stockCap >= 0 && qty > stockCap) {
+                        qty = stockCap;
+                        this.flashToast('Only ' + stockCap + ' available.');
+                    }
+                    row.qty = qty;
+                    this.cart = next;
+                    this.save();
+                    clearTimeout(this._qtySyncTimer);
+                    this._qtySyncTimer = setTimeout(() => this.syncCart({ silent: true }), 350);
+                },
+                removeItem(i) {
+                    this.cart = this.cart.filter((_, idx) => idx !== i);
+                    this.save();
+                },
+                inWishlist(id) { return this.wishlist.some((i) => Number(i.id) === Number(id)); },
+                toggleWishlist(product) {
+                    const idx = this.wishlist.findIndex((i) => Number(i.id) === Number(product.id));
+                    if (idx >= 0) this.wishlist.splice(idx, 1);
+                    else this.wishlist.push(product);
+                    this.saveWishlist();
+                },
+                flashToast(message) {
+                    this.toastMessage = message;
+                    this.toastVisible = true;
+                    clearTimeout(this._toastTimer);
+                    this._toastTimer = setTimeout(() => { this.toastVisible = false; }, 2200);
+                },
+                prefillCheckout(profile) {
+                    this.checkout.name = profile?.name || '';
+                    this.checkout.phone = profile?.phone || '';
+                    this.checkout.address = profile?.address || '';
+                },
+                // Guests: remember contact details and recent order IDs on this device only.
+                restoreGuestContact() {
+                    try {
+                        const saved = JSON.parse(localStorage.getItem('gaget_guest_contact') || 'null');
+                        if (!saved) return;
+                        this.checkout.name = this.checkout.name || saved.name || '';
+                        this.checkout.phone = this.checkout.phone || saved.phone || '';
+                        this.checkout.address = this.checkout.address || saved.address || '';
+                        if (saved.zone) this.checkout.zone = saved.zone;
+                    } catch (e) {}
+                },
+                rememberGuestOrder(invoice) {
+                    try {
+                        localStorage.setItem('gaget_guest_contact', JSON.stringify({
+                            name: this.checkout.name,
+                            phone: this.checkout.phone,
+                            address: this.checkout.address,
+                            zone: this.checkout.zone,
+                        }));
+                        if (!invoice) return;
+                        const recent = JSON.parse(localStorage.getItem('gaget_recent_orders') || '[]')
+                            .filter((o) => o && o.invoice && o.invoice !== invoice);
+                        recent.unshift({ invoice, phone: this.checkout.phone, at: new Date().toISOString() });
+                        localStorage.setItem('gaget_recent_orders', JSON.stringify(recent.slice(0, 5)));
+                    } catch (e) {}
+                },
+                signInForCheckout() {
+                    this.authPurpose = 'checkout';
+                    this.checkoutStep = 'auth';
+                    this.authTab = 'login';
+                    this.authMessage = '';
+                    this.authMessageOk = false;
+                },
+                continueAsGuest() {
+                    this.authMessage = '';
+                    this.checkoutStep = 'order';
+                },
+                startCheckout() {
+                    if (this.cart.length === 0) return;
+                    this.cartOpen = false;
+                    this.checkoutOpen = true;
+                    this.authPurpose = 'checkout';
+                    this.orderMessage = '';
+                    this.orderSuccess = false;
+                    this.authMessage = '';
+                    this.authMessageOk = false;
+                    const cfg = this.deliveryConfig || {};
+                    if (!cfg.cod_enabled && cfg.confirmation_enabled && Number(cfg.confirmation_amount) > 0) {
+                        this.checkout.payment_method = 'confirmation_charge';
+                    } else if (cfg.cod_enabled) {
+                        this.checkout.payment_method = 'cash_on_delivery';
+                    }
+                    this.syncCart({ silent: true });
+                    this.checkoutStep = 'order';
+                },
+                openSignIn(tab = 'login') {
+                    this.cartOpen = false;
+                    this.checkoutOpen = true;
+                    this.authPurpose = 'account';
+                    this.checkoutStep = 'auth';
+                    this.authTab = tab === 'register' ? 'register' : 'login';
+                    this.authMessage = '';
+                    this.authMessageOk = false;
+                    this.orderMessage = '';
+                    this.orderSuccess = false;
+                },
+                afterAuthSuccess(user) {
+                    this.isLoggedIn = true;
+                    this.authMessageOk = false;
+                    this.prefillCheckout(user);
+                    if (this.authPurpose === 'checkout') {
+                        this.checkoutStep = 'order';
+                        if (window.GagetLoader) window.GagetLoader.hide();
+                        return;
+                    }
+                    // Return to the same page they signed in from
+                    if (window.GagetLoader) window.GagetLoader.show('Welcome back');
+                    window.location.reload();
+                },
+                async submitLogin() {
+                    this.authLoading = true;
+                    this.authMessage = '';
+                    this.authMessageOk = false;
+                    if (window.GagetLoader) window.GagetLoader.show('Signing you in');
+                    try {
+                        if (typeof window.refreshCsrfToken === 'function') {
+                            await window.refreshCsrfToken();
+                        }
+                        const res = await this.csrfFetch(@json(route('website.account.login')), {
+                            method: 'POST',
+                            body: JSON.stringify(this.authLogin),
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        this.applyCsrfFromResponse(data);
+                        if (!res.ok) {
+                            this.authMessage = data.message || data.errors?.email?.[0] || (res.status === 419 ? @js(__('website.auth.session_expired')) : @js(__('website.auth.sign_in_failed')));
+                            if (window.GagetLoader) window.GagetLoader.hide();
+                            return;
+                        }
+                        this.afterAuthSuccess(data.user);
+                    } catch (e) {
+                        this.authMessage = 'Network error. Please try again.';
+                        if (window.GagetLoader) window.GagetLoader.hide();
+                    } finally {
+                        this.authLoading = false;
+                    }
+                },
+                async submitRegister() {
+                    if (!this.authRegister.name || !this.authRegister.phone || !this.authRegister.email || !this.authRegister.password) {
+                        this.authMessage = 'Please fill name, phone, email, and password.';
+                        this.authMessageOk = false;
+                        return;
+                    }
+                    this.authLoading = true;
+                    this.authMessage = '';
+                    this.authMessageOk = false;
+                    if (window.GagetLoader) window.GagetLoader.show('Creating your account');
+                    try {
+                        if (typeof window.refreshCsrfToken === 'function') {
+                            await window.refreshCsrfToken();
+                        }
+                        const res = await this.csrfFetch(@json(route('website.account.register')), {
+                            method: 'POST',
+                            body: JSON.stringify(this.authRegister),
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        this.applyCsrfFromResponse(data);
+                        if (!res.ok) {
+                            const err = data.errors || {};
+                            this.authMessage = err.name?.[0] || err.email?.[0] || err.phone?.[0] || err.password?.[0] || data.message || (res.status === 419 ? 'Session expired. Please try again.' : 'Registration failed.');
+                            return;
+                        }
+                        // Registration only creates the account — user must sign in to order.
+                        this.isLoggedIn = false;
+                        this.authLogin.email = data.email || this.authRegister.email || '';
+                        this.authLogin.password = '';
+                        this.authRegister = { name: '', phone: '', email: '', password: '', address: '' };
+                        this.authTab = 'login';
+                        this.authMessageOk = true;
+                        this.authMessage = data.message || 'Account created. Please sign in to continue.';
+                    } catch (e) {
+                        this.authMessage = 'Network error. Please try again.';
+                    } finally {
+                        this.authLoading = false;
+                        if (window.GagetLoader) window.GagetLoader.hide();
+                    }
+                },
+                async placeOrder() {
+                    const name = String(this.checkout.name || '').trim();
+                    const phone = String(this.checkout.phone || '').trim();
+                    const address = String(this.checkout.address || '').trim().replace(/\s+/g, ' ');
+                    this.checkout.name = name;
+                    this.checkout.phone = phone;
+                    this.checkout.address = address;
+
+                    if (!name || !phone) {
+                        this.orderMessage = 'Full name and phone number are required.';
+                        this.orderSuccess = false;
+                        return;
+                    }
+                    if (!address) {
+                        this.orderMessage = 'Delivery address is required.';
+                        this.orderSuccess = false;
+                        return;
+                    }
+                    const paymentReference = String(this.checkout.payment_reference || '').trim();
+                    if (this.deliveryQuote.paymentMethod === 'confirmation_charge' && paymentReference.length < 4) {
+                        this.orderMessage = 'Enter the Transaction ID of your confirmation payment.';
+                        this.orderSuccess = false;
+                        return;
+                    }
+                    this.ordering = true;
+                    this.orderMessage = '';
+                    if (window.GagetLoader) window.GagetLoader.show('Placing your order');
+                    try {
+                        if (typeof window.refreshCsrfToken === 'function') {
+                            await window.refreshCsrfToken();
+                        }
+                        const res = await this.csrfFetch(@json(route('website.checkout')), {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                cart: this.cart,
+                                customer_name: name,
+                                customer_phone: phone,
+                                customer_address: address,
+                                delivery_zone: this.deliveryQuote.zone,
+                                payment_method: this.deliveryQuote.paymentMethod,
+                                payment_reference: this.deliveryQuote.paymentMethod === 'confirmation_charge' ? paymentReference : null,
+                            }),
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        this.applyCsrfFromResponse(data);
+                        if (res.status === 419) {
+                            this.orderSuccess = false;
+                            this.orderMessage = 'Session expired. Please try placing the order again.';
+                            return;
+                        }
+                        if (res.status === 429) {
+                            this.orderSuccess = false;
+                            this.orderMessage = 'Too many attempts. Please wait a minute and try again.';
+                            return;
+                        }
+                        if (res.status === 422) {
+                            this.orderSuccess = false;
+                            this.orderMessage = data.errors?.customer_address?.[0]
+                                || data.errors?.payment_reference?.[0]
+                                || data.errors?.customer_phone?.[0]
+                                || data.errors?.customer_name?.[0]
+                                || data.message
+                                || 'Please fill in a complete delivery address.';
+                            return;
+                        }
+                        if (data.success) {
+                            if (!data.invoice && !data.order_id) {
+                                this.orderSuccess = false;
+                                this.orderMessage = @js(__('website.checkout.order_no_id'));
+                                return;
+                            }
+                            this.cart = [];
+                            this.save();
+                            this.orderSuccess = true;
+                            this.lastOrderId = data.order_id || null;
+                            this.lastOrderInvoice = data.invoice || '';
+                            this.lastOrderGuest = !!data.guest;
+                            this.lastTrackUrl = data.track_url || '';
+                            this.orderMessage = '';
+                            this.checkoutStep = 'success';
+                            if (this.lastOrderGuest) {
+                                this.rememberGuestOrder(this.lastOrderInvoice);
+                            } else {
+                                this.startAccountRedirect();
+                            }
+                        } else {
+                            this.orderSuccess = false;
+                            this.orderMessage = data.message || @js(__('website.checkout.order_failed'));
+                        }
+                    } catch (e) {
+                        this.orderSuccess = false;
+                        this.orderMessage = 'Network error.';
+                    } finally {
+                        this.ordering = false;
+                        if (window.GagetLoader) window.GagetLoader.hide();
+                    }
+                },
+                trackLastOrder() {
+                    if (window.GagetLoader) window.GagetLoader.show('Opening order tracking');
+                    window.location.href = this.lastTrackUrl
+                        || (@json(route('website.track')) + '?invoice=' + encodeURIComponent(this.lastOrderInvoice || ''));
+                },
+                finishGuestOrder() {
+                    this.checkoutOpen = false;
+                    this.checkoutStep = 'order';
+                },
+                startAccountRedirect() {
+                    if (this._redirectTimer) clearInterval(this._redirectTimer);
+                    this.redirectSeconds = 3;
+                    const accountUrl = @json(route('website.account'));
+                    const go = () => {
+                        if (this._redirectTimer) clearInterval(this._redirectTimer);
+                        if (window.GagetLoader) window.GagetLoader.show('Opening your orders');
+                        const params = new URLSearchParams({ placed: '1' });
+                        if (this.lastOrderInvoice) params.set('order', this.lastOrderInvoice);
+                        else if (this.lastOrderId) params.set('oid', String(this.lastOrderId));
+                        window.location.href = accountUrl + '?' + params.toString() + '#recent-orders';
+                    };
+                    this._redirectTimer = setInterval(() => {
+                        this.redirectSeconds -= 1;
+                        if (this.redirectSeconds <= 0) go();
+                    }, 1000);
+                },
+                goToAccountNow() {
+                    if (this._redirectTimer) clearInterval(this._redirectTimer);
+                    this.redirectSeconds = 0;
+                    if (window.GagetLoader) window.GagetLoader.show('Opening your orders');
+                    const accountUrl = @json(route('website.account'));
+                    const params = new URLSearchParams({ placed: '1' });
+                    if (this.lastOrderInvoice) params.set('order', this.lastOrderInvoice);
+                    else if (this.lastOrderId) params.set('oid', String(this.lastOrderId));
+                    window.location.href = accountUrl + '?' + params.toString() + '#recent-orders';
+                },
+                jsonHeaders() {
+                    return {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': (window.currentCsrfToken && window.currentCsrfToken())
+                            || document.querySelector('meta[name=csrf-token]')?.content
+                            || '',
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    };
+                },
+                async csrfFetch(url, options = {}) {
+                    if (typeof window.fetchJsonWithCsrf === 'function') {
+                        return window.fetchJsonWithCsrf(url, options);
+                    }
+                    return fetch(url, { credentials: 'same-origin', ...options, headers: { ...this.jsonHeaders(), ...(options.headers || {}) } });
+                },
+                applyCsrfFromResponse(data) {
+                    if (data?.csrf_token && typeof window.syncCsrfToken === 'function') {
+                        window.syncCsrfToken(data.csrf_token);
+                    }
+                },
+            };
+        }
+        window.storefrontCart = storefrontCart;
+        window.navDropdown = function navDropdown() {
+            return {
+                open: false,
+                _timer: null,
+                hl: { y: 0, h: 0, on: false, snap: true },
+                track(event) {
+                    const item = event.target.closest('.gaget-nav-dropdown-item');
+                    if (!item) return;
+                    const snap = !this.hl.on;
+                    this.hl = { y: item.offsetTop, h: item.offsetHeight, on: true, snap };
+                    if (snap) requestAnimationFrame(() => { this.hl.snap = false; });
+                },
+                untrack() {
+                    this.hl.on = false;
+                    this.hl.snap = true;
+                },
+                show() {
+                    clearTimeout(this._timer);
+                    this.open = true;
+                },
+                hide() {
+                    clearTimeout(this._timer);
+                    this._timer = setTimeout(() => { this.open = false; }, 180);
+                },
+                close() {
+                    clearTimeout(this._timer);
+                    this.open = false;
+                },
+                toggle() {
+                    clearTimeout(this._timer);
+                    this.open = !this.open;
+                },
+                onFocusOut(event) {
+                    if (!this.$el.contains(event.relatedTarget)) {
+                        this.hide();
+                    }
+                },
+            };
+        };
+    </script>
+    @vite(['resources/css/app.css', 'resources/css/website.css', 'resources/css/website-mobile.css', 'resources/css/website-theme.css', 'resources/css/website-glow.css', 'resources/js/app.js'])
+    <style>
+        [x-cloak]{display:none!important}
+
+        /* Critical cart fly + drawer animations (always available) */
+        .gaget-cart-flyer{position:fixed;z-index:100060;width:64px;height:64px;margin:0;padding:0;border:0;border-radius:18px;overflow:hidden;pointer-events:none;background:#fff;box-shadow:0 16px 36px rgba(74, 48, 38,.28),0 0 0 3px rgba(236, 133, 96,.25);opacity:1;will-change:left,top,transform,opacity}
+        .gaget-cart-flyer img{width:100%;height:100%;object-fit:cover;display:block}
+        .gaget-cart-flyer--plain{display:grid;place-items:center;background:linear-gradient(145deg,#9a7fe0,#db6f4a);color:#fff;font-size:22px;font-weight:800}
+        .gaget-cart-flyer.is-flying{animation:gaget-fly-cart .9s cubic-bezier(.22,1,.36,1) forwards}
+        @keyframes gaget-fly-cart{
+            0%{left:var(--fly-x0);top:var(--fly-y0);transform:scale(1) rotate(-8deg);opacity:1}
+            55%{left:var(--fly-x1);top:var(--fly-y1);transform:scale(.9) rotate(14deg);opacity:1}
+            100%{left:var(--fly-x2);top:var(--fly-y2);transform:scale(.18) rotate(-22deg);opacity:0}
+        }
+        .gaget-action-btn.is-cart-swing .gaget-cart-icon{animation:gaget-cart-swing .75s cubic-bezier(.34,1.45,.64,1);transform-origin:50% 10%}
+        .gaget-action-btn.is-cart-swing .gaget-cart-badge{animation:gaget-badge-pop .55s cubic-bezier(.34,1.45,.64,1)}
+        @keyframes gaget-cart-swing{0%{transform:rotate(0)}20%{transform:rotate(-22deg) scale(1.12)}45%{transform:rotate(16deg) scale(1.08)}70%{transform:rotate(-10deg)}100%{transform:rotate(0) scale(1)}}
+        @keyframes gaget-badge-pop{0%{transform:scale(.55)}60%{transform:scale(1.35)}100%{transform:scale(1)}}
+        .gaget-cart-shell{position:fixed;inset:0;z-index:120;pointer-events:none}
+        .gaget-cart-shell.is-open{pointer-events:auto}
+        .gaget-cart-backdrop{position:absolute;inset:0;background:rgba(74, 48, 38,.42);opacity:0;visibility:hidden;transition:opacity .28s ease,visibility 0s linear .28s}
+        .gaget-cart-shell.is-open .gaget-cart-backdrop{opacity:1;visibility:visible;transition:opacity .28s ease,visibility 0s}
+        .gaget-cart-panel{position:absolute;top:0;right:0;bottom:0;width:min(100%,420px);background:#fffaf5;display:flex;flex-direction:column;border-radius:28px 0 0 28px;overflow:hidden;border-left:1px solid #f2e6dc;box-shadow:-18px 0 48px rgba(74, 48, 38,.12);transform:translate3d(100%,0,0);opacity:1}
+        .gaget-cart-shell.is-open .gaget-cart-panel{animation:gaget-cart-sheet-in .38s cubic-bezier(.22,1,.36,1) forwards}
+        .gaget-cart-shell.is-closing .gaget-cart-panel{animation:gaget-cart-sheet-out .28s ease forwards}
+        .gaget-cart-line{opacity:1!important;transform:none}
+        .gaget-cart-panel__foot{opacity:1!important;transform:none}
+        .gaget-cart-line__img{width:100%!important;height:100%!important;object-fit:cover!important}
+        @keyframes gaget-cart-sheet-in{0%{transform:translate3d(100%,0,0)}100%{transform:translate3d(0,0,0)}}
+        @keyframes gaget-cart-sheet-out{0%{transform:translate3d(0,0,0)}100%{transform:translate3d(100%,0,0)}}
+        .tn-product-add.is-adding,.gaget-btn-primary.is-adding,[data-add-to-cart].is-adding{animation:gaget-add-press .45s cubic-bezier(.34,1.45,.64,1)}
+        @keyframes gaget-add-press{0%{transform:scale(1)}35%{transform:scale(.92)}70%{transform:scale(1.04)}100%{transform:scale(1)}}
+        /* Fixed header: announcement strip + float pill */
+        .gaget-sticky-header{position:fixed!important;top:0;left:0;right:0;width:100%;z-index:80;background:#fff!important;box-shadow:0 1px 0 #F5D6E5!important;pointer-events:none;padding:0;box-sizing:border-box;overflow:visible!important}
+        .gaget-sticky-header>*{pointer-events:auto}
+        .gaget-header-spacer{display:block;width:100%;height:var(--g-header-h,100px);pointer-events:none;background:#FFF5F8}
+        /* Home: transparent shell so hero silk shows through; pill floats over image */
+        body.gw-home .gaget-sticky-header{background:transparent!important;box-shadow:none!important}
+        body.gw-home .gaget-sticky-header::before{display:none!important;background:transparent!important}
+        body.gw-home .gaget-header-spacer{background:transparent!important;height:var(--g-header-h,118px)}
+
+        /* Safety: brand logos must never render at intrinsic SVG/PNG size */
+        .gaget-store .tn-brand-logo{height:44px!important;max-height:44px!important;max-width:120px!important;width:auto!important;object-fit:contain!important}
+        .gaget-store .tn-brand-logo-frame{height:52px!important;max-width:140px!important;overflow:hidden!important}
+        .gaget-store .pd-brand-logo{height:18px!important;max-height:18px!important;max-width:88px!important;width:auto!important;object-fit:contain!important}
+        .tn-footer-credit{border-top:1px solid #f2e6dc;padding:0;text-align:center;background:#fbf0e7}
+        .tn-footer-credit-inner{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px 16px;padding:14px 0 max(16px,env(safe-area-inset-bottom))}
+        .tn-footer-copy{margin:0;font-size:12px;font-weight:500;color:#8c776d}
+        .powered-by,.powered-by--footer{margin:0;font-size:12px;font-weight:500;letter-spacing:.02em;color:#8c776d;text-align:center}
+        .powered-by strong,.powered-by--footer strong{color:#3a2a24;font-weight:800}
+    </style>
+</head>
+<body class="gaget-store antialiased {{ request()->routeIs('home') ? 'gw-home' : '' }}" id="storefront-root" x-data="storefrontCart()" :class="{ 'is-nav-open': mobileOpen, 'is-cart-open': cartOpen || checkoutOpen }" @keydown.escape.window="cartOpen && closeCart(); checkoutOpen=false; mobileOpen=false; mobileCatsOpen=false; mobileBrandsOpen=false">
+
+
+@include('website.partials.header')
+<script>
+(function () {
+    function syncHeaderHeight() {
+        var header = document.querySelector('.gaget-sticky-header');
+        var spacer = document.getElementById('gaget-header-spacer');
+        if (!header) return;
+        var h = Math.ceil(header.getBoundingClientRect().height);
+        if (h < 40) return;
+        document.documentElement.style.setProperty('--g-header-h', h + 'px');
+        if (spacer) spacer.style.height = h + 'px';
+    }
+    syncHeaderHeight();
+    window.addEventListener('load', syncHeaderHeight);
+    window.addEventListener('resize', syncHeaderHeight);
+    if (typeof ResizeObserver !== 'undefined') {
+        var header = document.querySelector('.gaget-sticky-header');
+        if (header) new ResizeObserver(syncHeaderHeight).observe(header);
+    }
+})();
+</script>
+
+@auth('web')
+    <form id="storefront-logout-form" method="POST" action="{{ route('website.account.logout') }}" class="hidden" aria-hidden="true">
+        @csrf
+    </form>
+    <script>
+        window.storefrontLogout = function () {
+            const form = document.getElementById('storefront-logout-form');
+            if (form) form.submit();
+        };
+        window.addEventListener('pageshow', function (event) {
+            if (event.persisted) {
+                window.location.reload();
+            }
+        });
+    </script>
+@endauth
+
+<main>
+    @yield('content')
+</main>
+
+@include('website.partials.footer')
+
+{{-- Cart drawer --}}
+<div class="gaget-cart-shell"
+     :class="{ 'is-open': cartOpen }"
+     :aria-hidden="cartOpen ? 'false' : 'true'">
+    <div class="gaget-cart-backdrop" @click="closeCart()"></div>
+    <aside class="gaget-cart-panel" role="dialog" aria-modal="true" aria-label="{{ __('website.cart.shopping_cart') }}">
+        <div class="gaget-cart-panel__head">
+            <div class="gaget-cart-panel__head-text">
+                <h3 class="gaget-cart-panel__title">{{ __('website.cart.title') }}</h3>
+                <p class="gaget-cart-panel__count"><span x-text="cartCount"></span> <span x-text="cartCount === 1 ? @js(__('website.cart.item')) : @js(__('website.cart.items'))"></span></p>
+            </div>
+            <button type="button" class="gaget-cart-panel__close" @click="closeCart()" aria-label="{{ __('website.cart.close') }}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+
+        <div class="gaget-cart-panel__body">
+            <template x-if="cart.length === 0">
+                <div class="gaget-cart-empty">
+                    <div class="gaget-cart-empty__icon" aria-hidden="true">
+                        <svg viewBox="0 0 64 64" fill="none" stroke="#E91E63" stroke-width="2.2" width="64" height="64" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 20h40l-5 24H17L12 20z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M22 20v-4a10 10 0 0120 0v4"/>
+                            <circle cx="24" cy="52" r="3" fill="#E91E63" stroke="none"/>
+                            <circle cx="40" cy="52" r="3" fill="#E91E63" stroke="none"/>
+                        </svg>
+                    </div>
+                    <p class="gaget-cart-empty__title">{{ __('website.cart.empty_title') }}</p>
+                    <p class="gaget-cart-empty__text">{{ __('website.cart.empty_text') }}</p>
+                    <button type="button" class="gaget-btn-primary gaget-cart-empty__cta" @click="closeCart()">{{ __('website.cart.continue_shopping') }}</button>
+                </div>
+            </template>
+
+            <template x-for="(item, i) in cart" :key="item.id">
+                <div class="gaget-cart-line" :style="'--line-i:' + i">
+                    <div class="gaget-cart-line__media">
+                        <img :src="item.image" class="gaget-cart-line__img" alt="" loading="lazy">
+                    </div>
+                    <div class="gaget-cart-line__meta">
+                        <div class="gaget-cart-line__top">
+                            <p class="gaget-cart-line__name" x-text="item.name"></p>
+                            <button type="button" class="gaget-cart-line__remove" @click="removeItem(i)" aria-label="{{ __('website.cart.remove_item') }}">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 7h12M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m2 0v12a2 2 0 01-2 2H8a2 2 0 01-2-2V7h12zM10 11v6M14 11v6"/></svg>
+                            </button>
+                        </div>
+                        <p class="gaget-cart-line__price" x-text="currency + Math.round(Number(item.price) || 0).toLocaleString()"></p>
+                        <div class="gaget-cart-line__actions">
+                            <div class="gaget-cart-qty">
+                                <button type="button" @click="updateQty(i, -1)" aria-label="{{ __('website.common.decrease_qty') }}">−</button>
+                                <span x-text="item.qty"></span>
+                                <button type="button"
+                                        @click="updateQty(i, 1)"
+                                        :disabled="Number(item.stock) > 0 && Number(item.qty) >= Number(item.stock)"
+                                        :class="Number(item.stock) > 0 && Number(item.qty) >= Number(item.stock) && 'opacity-40 cursor-not-allowed'"
+                                        aria-label="{{ __('website.common.increase_qty') }}">+</button>
+                            </div>
+                            <p class="gaget-cart-line__line-total" x-text="currency + Math.round((Number(item.price) || 0) * (Number(item.qty) || 0)).toLocaleString()"></p>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <div class="gaget-cart-panel__foot" x-show="cart.length > 0" x-cloak>
+            <div class="gaget-cart-panel__summary">
+                <div class="gaget-cart-panel__total">
+                    <span>{{ __('website.cart.subtotal') }}</span>
+                    <strong x-text="currency + Math.round(Number(cartTotal) || 0).toLocaleString()"></strong>
+                </div>
+                <p class="gaget-cart-panel__hint">{{ __('website.cart.shipping_hint') }}</p>
+            </div>
+            <button type="button" @click="startCheckout()" class="gaget-cart-panel__checkout">
+                {{ __('website.cart.checkout') }}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+            </button>
+        </div>
+    </aside>
+</div>
+
+{{-- Checkout: sign in / register / place order (one modal) --}}
+@php
+    $authStoreName = $settings->store_name ?? config('app.name', 'Hira Moni');
+    $authLogo = !empty($settings->logo_path) ? public_storage_url($settings->logo_path) : asset('images/hiramoni-logo-round.png');
+@endphp
+<div x-show="checkoutOpen" x-cloak class="gw-sheet-overlay" @focusin="scrollCheckoutField($event)">
+    <div class="bb-modal-backdrop absolute inset-0 bg-black/50" @click="checkoutStep !== 'success' && (checkoutOpen=false)"></div>
+    <div class="bb-modal gw-auth-modal relative bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full"
+         :class="checkoutStep === 'order' ? 'gw-checkout-modal' : (checkoutStep === 'success' ? 'max-w-md overflow-hidden' : 'max-w-md max-h-[92vh] overflow-y-auto gw-auth-sheet')">
+        <button type="button" x-show="checkoutStep !== 'success'" @click="checkoutOpen=false" class="gw-auth-close" aria-label="Close">&times;</button>
+
+        {{-- Auth step (standalone account OR checkout) --}}
+        <div x-show="checkoutStep==='auth'" x-cloak class="gw-auth-panel">
+            <div class="gw-auth-hero">
+                <div class="gw-auth-brand">
+                    <img src="{{ $authLogo }}" alt="{{ $authStoreName }}" class="gw-auth-logo">
+                    <div>
+                        <p class="gw-auth-store">{{ $authStoreName }}</p>
+                        <p class="gw-auth-tag">{{ __('website.auth.beauty_tag') }}</p>
+                    </div>
+                </div>
+                <h3 class="gw-auth-title" x-text="authPurpose === 'checkout' ? @js(__('website.auth.sign_in_faster')) : (authTab === 'register' ? @js(__('website.auth.create_account')) : @js(__('website.auth.welcome_back')) )"></h3>
+                <p class="gw-auth-sub" x-text="authPurpose === 'checkout' ? @js(__('website.auth.checkout_sub')) : @js(__('website.auth.account_sub'))"></p>
+            </div>
+
+            <div class="gw-auth-body">
+                <div class="gw-auth-tabs">
+                    <button type="button" @click="authTab='login'; authMessage=''; authMessageOk=false" class="gw-auth-tab" :class="authTab==='login' && 'is-active'">{{ __('website.auth.sign_in') }}</button>
+                    <button type="button" @click="authTab='register'; authMessage=''; authMessageOk=false" class="gw-auth-tab" :class="authTab==='register' && 'is-active'">{{ __('website.auth.create_account_btn') }}</button>
+                </div>
+
+                <div x-show="authTab==='login'" class="gw-auth-fields">
+                    <label class="gw-auth-label">{{ __('website.auth.email') }}
+                        <input x-model="authLogin.email" type="email" placeholder="you@email.com" class="gw-auth-input" autocomplete="email">
+                    </label>
+                    <label class="gw-auth-label">{{ __('website.auth.password') }}
+                        <input x-model="authLogin.password" type="password" placeholder="••••••••" class="gw-auth-input" autocomplete="current-password" @keydown.enter.prevent="submitLogin()">
+                    </label>
+                    <button type="button" @click="submitLogin()" :disabled="authLoading" class="gw-auth-submit disabled:opacity-50">
+                        <span x-text="authLoading ? @js(__('website.auth.signing_in')) : (authPurpose === 'checkout' ? @js(__('website.auth.sign_in_continue')) : @js(__('website.auth.sign_in')) )"></span>
+                    </button>
+                </div>
+
+                <div x-show="authTab==='register'" class="gw-auth-fields">
+                    <label class="gw-auth-label">{{ __('website.auth.full_name') }}
+                        <input x-model="authRegister.name" type="text" placeholder="{{ __('website.auth.full_name') }}" class="gw-auth-input" autocomplete="name">
+                    </label>
+                    <label class="gw-auth-label">{{ __('website.auth.phone') }}
+                        <input x-model="authRegister.phone" type="text" placeholder="01XXXXXXXXX" class="gw-auth-input" autocomplete="tel">
+                    </label>
+                    <label class="gw-auth-label">{{ __('website.auth.email') }}
+                        <input x-model="authRegister.email" type="email" placeholder="you@email.com" class="gw-auth-input" autocomplete="email">
+                    </label>
+                    <label class="gw-auth-label">{{ __('website.auth.password_min') }}
+                        <input x-model="authRegister.password" type="password" placeholder="••••••••" class="gw-auth-input" autocomplete="new-password">
+                    </label>
+                    <label class="gw-auth-label">{{ __('website.auth.address_optional') }}
+                        <textarea x-model="authRegister.address" placeholder="{{ __('website.auth.address_optional') }}" class="gw-auth-input gw-auth-textarea" rows="2"></textarea>
+                    </label>
+                    <button type="button" @click="submitRegister()" :disabled="authLoading" class="gw-auth-submit disabled:opacity-50">
+                        <span x-text="authLoading ? @js(__('website.auth.creating')) : @js(__('website.auth.create_account_btn'))"></span>
+                    </button>
+                </div>
+
+                <p x-show="authMessage" x-text="authMessage" class="gw-auth-message" :class="authMessageOk ? 'is-ok' : 'is-err'"></p>
+
+                <template x-if="authPurpose === 'checkout'">
+                    <div class="gw-auth-guest">
+                        <div class="gw-auth-or"><span>{{ __('website.auth.or') }}</span></div>
+                        <button type="button" @click="continueAsGuest()" class="gw-auth-guest-btn">
+                            {{ __('website.auth.continue_guest') }}
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M5 12h14m-6-6 6 6-6 6"/></svg>
+                        </button>
+                        <p class="gw-auth-guest-note">{{ __('website.auth.guest_track_note') }}</p>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+        {{-- Order step --}}
+        <div x-show="checkoutStep==='order'" x-cloak class="gw-checkout">
+            <div class="gw-checkout-head">
+                <div>
+                    <h3 class="text-xl font-bold text-slate-900 pr-8">{{ __('website.checkout.place_order') }}</h3>
+                    <p class="text-sm text-slate-500 mt-1"><span x-text="cartCount"></span> item(s) · Subtotal <span class="font-semibold text-slate-800" x-text="currency + Math.round(Number(cartTotal) || 0).toLocaleString()"></span></p>
+                </div>
+            </div>
+
+            <div x-show="!isLoggedIn" class="bb-guest-note gw-checkout-guest">
+                <span class="bb-guest-note__icon" aria-hidden="true">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                </span>
+                <span class="min-w-0 flex-1">
+                    <span class="block text-[12.5px] font-bold text-slate-800">{{ __('website.checkout.guest_title') }}</span>
+                    <span class="block text-[11.5px] text-slate-500">{{ __('website.checkout.guest_sub') }}</span>
+                </span>
+                <button type="button" @click="signInForCheckout()" class="bb-guest-note__link">{{ __('website.checkout.sign_in') }}</button>
+            </div>
+
+            <div class="gw-checkout-grid">
+                <div class="gw-checkout-col space-y-3">
+                    <div class="gw-checkout-pair">
+                        <div>
+                            <label class="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">{{ __('website.checkout.full_name') }} <span class="text-rose-500">*</span></label>
+                            <input x-model="checkout.name" type="text" required autocomplete="name" placeholder="{{ __('website.checkout.full_name_ph') }}" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm">
+                        </div>
+                        <div>
+                            <label class="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">{{ __('website.checkout.phone') }} <span class="text-rose-500">*</span></label>
+                            <input x-model="checkout.phone" @change="syncCart({ silent: true })" type="tel" required autocomplete="tel" placeholder="01XXXXXXXXX" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">{{ __('website.checkout.address') }} <span class="text-rose-500">*</span></label>
+                        <textarea x-model="checkout.address"
+                                  required
+                                  autocomplete="street-address"
+                                  placeholder="{{ __('website.checkout.address_ph') }}"
+                                  class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm"
+                                  :class="!String(checkout.address || '').trim() && orderMessage && orderMessage.toLowerCase().includes('address') ? 'border-rose-400 ring-1 ring-rose-200' : ''"
+                                  rows="2"></textarea>
+                        <p class="mt-1 text-[11px] text-slate-500">{{ __('website.checkout.address_hint') }}</p>
+                    </div>
+                    <div>
+                        <p class="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">{{ __('website.checkout.delivery_area') }}</p>
+                        <div class="grid grid-cols-2 gap-2">
+                            <template x-for="zone in deliveryZones" :key="zone.code">
+                                <button type="button" @click="checkout.zone = zone.code"
+                                        class="rounded-xl border px-3 py-2.5 text-left text-xs font-semibold transition"
+                                        :class="deliveryQuote.zone === zone.code ? 'border-rose-400 bg-rose-50 text-slate-900 ring-1 ring-rose-200' : 'border-slate-200 bg-white text-slate-600'">
+                                    <span class="block" x-text="zone.name"></span>
+                                    <span class="mt-0.5 block text-[11px] font-medium text-slate-500" x-text="currency + Number(zone.fee || 0).toFixed(0)"></span>
+                                    <span x-show="zone.note" class="mt-0.5 block text-[10px] font-medium text-slate-400" x-text="zone.note"></span>
+                                </button>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="gw-checkout-col space-y-3">
+                    <div class="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-xs space-y-1.5">
+                        <div class="flex justify-between"><span class="text-slate-500">{{ __('website.checkout.subtotal') }}</span><span class="font-semibold" x-text="currency + Math.round(Number(deliveryQuote.subtotal) || 0).toLocaleString()"></span></div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-500">{{ __('website.checkout.delivery') }} (<span x-text="deliveryQuote.zoneLabel"></span>)</span>
+                            <span class="font-semibold" x-text="deliveryQuote.isFree ? @js(__('website.checkout.free')) : (currency + Math.round(Number(deliveryQuote.deliveryFee) || 0).toLocaleString())"></span>
+                        </div>
+                        <p x-show="deliveryQuote.freeReason" x-text="deliveryQuote.freeReason" class="text-[11px] text-emerald-600 font-medium"></p>
+                        <div class="flex justify-between border-t border-slate-200 pt-1.5 text-sm">
+                            <span class="font-bold text-slate-800">{{ __('website.checkout.total') }}</span>
+                            <span class="font-bold text-slate-900" x-text="currency + Math.round(Number(deliveryQuote.grandTotal) || 0).toLocaleString()"></span>
+                        </div>
+                    </div>
+
+                    <div x-show="deliveryQuote.codEnabled || deliveryQuote.confirmationEnabled">
+                        <p class="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">{{ __('website.checkout.payment') }}</p>
+                        <div class="space-y-2">
+                            <label x-show="deliveryQuote.codEnabled" class="flex items-start gap-2.5 rounded-xl border px-3 py-2.5 cursor-pointer"
+                                   :class="checkout.payment_method==='cash_on_delivery' ? 'border-rose-400 bg-rose-50/70' : 'border-slate-200 bg-white'">
+                                <input type="radio" class="mt-0.5" value="cash_on_delivery" x-model="checkout.payment_method">
+                                <span>
+                                    <span class="block text-xs font-bold text-slate-900">{{ __('website.checkout.cod') }}</span>
+                                    <span class="block text-[11px] text-slate-500">{{ __('website.checkout.cod_hint') }}</span>
+                                </span>
+                            </label>
+                            <label x-show="deliveryQuote.confirmationEnabled" class="flex items-start gap-2.5 rounded-xl border px-3 py-2.5 cursor-pointer"
+                                   :class="checkout.payment_method==='confirmation_charge' ? 'border-rose-400 bg-rose-50/70' : 'border-slate-200 bg-white'">
+                                <input type="radio" class="mt-0.5" value="confirmation_charge" x-model="checkout.payment_method">
+                                <span>
+                                    <span class="block text-xs font-bold text-slate-900">{{ __('website.checkout.confirmation_charge') }}</span>
+                                    <span class="block text-[11px] text-slate-500">
+                                        Pay <span class="font-semibold" x-text="currency+Number(deliveryConfig.confirmation_amount||0).toFixed(0)"></span> now ·
+                                        balance <span class="font-semibold" x-text="currency + Math.round(Number(deliveryQuote.amountDueLater) || 0).toLocaleString()"></span> on delivery
+                                    </span>
+                                </span>
+                            </label>
+                            <div x-show="deliveryQuote.paymentMethod === 'confirmation_charge'" x-cloak class="rounded-xl border border-rose-200 bg-rose-50/60 px-3 py-2.5 space-y-2">
+                                <p x-show="deliveryConfig.confirmation_instructions" class="text-[11.5px] leading-relaxed text-slate-700 whitespace-pre-line" x-text="deliveryConfig.confirmation_instructions"></p>
+                                <label class="block">
+                                    <span class="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">{{ __('website.checkout.txn_id') }} <span class="text-rose-500">*</span></span>
+                                    <input x-model="checkout.payment_reference" type="text" maxlength="100" autocomplete="off" placeholder="e.g. 9A7B6C5D4E"
+                                           class="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="button" @click="placeOrder()" :disabled="ordering" class="w-full gaget-btn-primary text-center disabled:opacity-50">
+                        <span x-text="ordering
+                            ? @js(__('website.checkout.placing'))
+                            : (deliveryQuote.paymentMethod==='confirmation_charge'
+                                ? ('Confirm · pay ' + currency + deliveryQuote.confirmationAmount.toFixed(0) + ' now')
+                                : @js(__('website.checkout.confirm_cod')))"></span>
+                    </button>
+                    <p x-show="orderMessage" x-text="orderMessage" class="text-sm text-center" :class="orderSuccess ? 'text-green-600' : 'text-red-600'"></p>
+                </div>
+            </div>
+        </div>
+
+        {{-- Success step --}}
+        <div x-show="checkoutStep==='success'" x-cloak class="gaget-order-success text-center p-4 sm:p-6 py-6">
+            <div class="gaget-order-success__burst" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <div class="gaget-order-success__check mx-auto mb-3" aria-hidden="true" style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#FCE4EC,#F8BBD0);display:flex;align-items:center;justify-content:center;">
+                <svg viewBox="0 0 48 48" fill="none" width="40" height="40" aria-hidden="true">
+                    <circle cx="24" cy="24" r="22" fill="#E91E63" opacity=".15"/>
+                    <path d="M14 25l7 7 13-13" stroke="#E91E63" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <h3 class="text-xl font-extrabold text-slate-900">{{ __('website.checkout.success_title') }}</h3>
+            <p class="mt-2 text-sm text-slate-500">{{ __('website.checkout.success_sub') }}</p>
+            <div class="mt-5 rounded-2xl border border-emerald-200 bg-gradient-to-b from-emerald-50 to-white px-4 py-4 shadow-sm">
+                <p class="text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-700">{{ __('website.checkout.your_order_id') }}</p>
+                <p class="mt-1.5 font-mono text-[17px] font-extrabold tracking-wide text-emerald-950" x-text="lastOrderInvoice || ('#' + lastOrderId)"></p>
+                <p class="mt-2 text-[12px] text-emerald-800/80" x-show="!lastOrderGuest">{{ __('website.checkout.keep_id') }}</p>
+                <p class="mt-2 text-[12px] text-emerald-800/80" x-show="lastOrderGuest" x-cloak>
+                    {{ __('website.checkout.track_with_phone') }} <span class="font-semibold" x-text="checkout.phone"></span>.
+                </p>
+            </div>
+
+            <template x-if="!lastOrderGuest">
+                <div>
+                    <p class="mt-4 text-[12px] text-slate-500">
+                        {{ __('website.checkout.taking_to_orders') }}
+                        <span x-show="redirectSeconds > 0"> in <span class="font-bold text-blue-600" x-text="redirectSeconds"></span>s…</span>
+                    </p>
+                    <div class="mt-5 flex flex-col gap-2">
+                        <button type="button" @click="goToAccountNow()" class="gaget-btn-primary w-full text-center text-sm py-3">
+                            {{ __('website.checkout.view_order_now') }}
+                        </button>
+                    </div>
+                </div>
+            </template>
+
+            <template x-if="lastOrderGuest">
+                <div class="mt-5 flex flex-col gap-2">
+                    <button type="button" @click="trackLastOrder()" class="gaget-btn-primary w-full text-center text-sm py-3">
+                        {{ __('website.checkout.track_my_order') }}
+                    </button>
+                    <button type="button" @click="finishGuestOrder()" class="bb-guest-btn">
+                        {{ __('website.checkout.continue_shopping') }}
+                    </button>
+                    <p class="mt-1 text-[11.5px] text-slate-500">
+                        {{ __('website.checkout.want_account') }}
+                        <button type="button" @click="openSignIn('register')" class="font-bold text-[color:var(--bb-coral-deep)] hover:underline">{{ __('website.checkout.create_account') }}</button>
+                    </p>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+
+{{-- Toast --}}
+<div x-show="toastVisible" x-cloak x-transition.opacity.duration.200ms
+     class="fixed left-1/2 z-[140] -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2.5 text-[13px] font-semibold text-white shadow-lg"
+     style="bottom: max(1.25rem, env(safe-area-inset-bottom, 0px)); max-width: calc(100vw - 2rem);">
+    <span x-text="toastMessage"></span>
+</div>
+
+<script>
+window.getStorefrontRoot = function () {
+    const root = document.getElementById('storefront-root') || document.body;
+    if (!window.Alpine || typeof Alpine.$data !== 'function') return null;
+    try {
+        return Alpine.$data(root);
+    } catch (e) {
+        return null;
+    }
+};
+
+window.gagetFlyToCart = function (options) {
+    const opts = options || {};
+    const product = opts.product || {};
+    const sourceEl = opts.sourceEl || null;
+    const onDone = typeof opts.onDone === 'function' ? opts.onDone : function () {};
+    const cartTarget = document.getElementById('gaget-cart-target')
+        || document.querySelector('[data-cart-target]');
+
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduceMotion || !cartTarget) {
+        onDone();
+        return;
+    }
+
+    const fromRect = (sourceEl && sourceEl.getBoundingClientRect)
+        ? sourceEl.getBoundingClientRect()
+        : { left: window.innerWidth * 0.45, top: window.innerHeight * 0.45, width: 64, height: 64 };
+    const toRect = cartTarget.getBoundingClientRect();
+    const size = 64;
+
+    const x0 = fromRect.left + (fromRect.width || size) / 2 - size / 2;
+    const y0 = fromRect.top + (fromRect.height || size) / 2 - size / 2;
+    const x2 = toRect.left + toRect.width / 2 - size / 2;
+    const y2 = toRect.top + toRect.height / 2 - size / 2;
+    const x1 = x0 + (x2 - x0) * 0.42;
+    const y1 = Math.min(y0, y2) - Math.max(100, Math.abs(y2 - y0) * 0.45);
+
+    const flyer = document.createElement('div');
+    flyer.className = 'gaget-cart-flyer';
+    flyer.setAttribute('aria-hidden', 'true');
+    flyer.style.setProperty('--fly-x0', x0 + 'px');
+    flyer.style.setProperty('--fly-y0', y0 + 'px');
+    flyer.style.setProperty('--fly-x1', x1 + 'px');
+    flyer.style.setProperty('--fly-y1', y1 + 'px');
+    flyer.style.setProperty('--fly-x2', x2 + 'px');
+    flyer.style.setProperty('--fly-y2', y2 + 'px');
+    flyer.style.left = x0 + 'px';
+    flyer.style.top = y0 + 'px';
+
+    if (product.image) {
+        const img = document.createElement('img');
+        img.src = product.image;
+        img.alt = '';
+        flyer.appendChild(img);
+    } else {
+        flyer.classList.add('gaget-cart-flyer--plain');
+        flyer.textContent = '+';
+    }
+
+    document.body.appendChild(flyer);
+
+    let done = false;
+    const finished = function () {
+        if (done) return;
+        done = true;
+        flyer.remove();
+        cartTarget.classList.remove('is-cart-swing');
+        void cartTarget.offsetWidth;
+        cartTarget.classList.add('is-cart-swing');
+        setTimeout(function () {
+            cartTarget.classList.remove('is-cart-swing');
+        }, 800);
+        onDone();
+    };
+
+    // Pure CSS keyframe animation (professional arc + swing)
+    requestAnimationFrame(function () {
+        flyer.classList.add('is-flying');
+    });
+    flyer.addEventListener('animationend', finished, { once: true });
+    setTimeout(finished, 1000); // safety fallback
+};
+
+window.addProductToCart = function (product, qty = 1, openDrawer = true, sourceEl = null) {
+    const root = window.getStorefrontRoot();
+    if (root && typeof root.addToCart === 'function') {
+        root.addToCart(product, qty, false);
+        if (openDrawer) {
+            window.gagetFlyToCart({
+                product: product,
+                sourceEl: sourceEl,
+                onDone: function () {
+                    if (typeof root.openCart === 'function') root.openCart();
+                    else root.cartOpen = true;
+                },
+            });
+        } else {
+            const cartTarget = document.getElementById('gaget-cart-target');
+            if (cartTarget) {
+                cartTarget.classList.add('is-cart-swing');
+                setTimeout(function () { cartTarget.classList.remove('is-cart-swing'); }, 800);
+            }
+        }
+        return true;
+    }
+    return false;
+};
+
+document.addEventListener('click', function (event) {
+    const btn = event.target.closest('[data-add-to-cart]');
+    if (!btn) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    let product;
+    try {
+        product = JSON.parse(btn.getAttribute('data-add-to-cart'));
+    } catch (e) {
+        return;
+    }
+
+    btn.classList.remove('is-adding');
+    void btn.offsetWidth;
+    btn.classList.add('is-adding');
+    setTimeout(function () { btn.classList.remove('is-adding'); }, 500);
+
+    const qtyAttr = btn.getAttribute('data-qty');
+    const qtyInput = document.querySelector('[data-product-qty], #pd-qty, input[name="qty"]');
+    const qtyFromInput = qtyInput ? Number(qtyInput.value) : NaN;
+    const qty = Math.max(1, Number(qtyAttr || qtyFromInput || 1) || 1);
+    const openDrawer = btn.getAttribute('data-open-cart') !== '0';
+    const goCheckout = btn.getAttribute('data-checkout') === '1';
+
+    const card = btn.closest('.tn-product-card, .tn-card, .gs-card, .pd-buy, [data-product-live-root], article, .product-card') || btn;
+    const img = card.querySelector('.tn-product-card img, .tn-product-media img, .pd-gallery img, .gs-card img, img');
+    const sourceEl = img || btn;
+
+    const finishCheckout = function () {
+        const root = window.getStorefrontRoot();
+        if (root && typeof root.startCheckout === 'function') root.startCheckout();
+    };
+
+    if (window.addProductToCart(product, qty, goCheckout ? false : openDrawer, sourceEl)) {
+        if (goCheckout) finishCheckout();
+        return;
+    }
+
+    let tries = 0;
+    const timer = setInterval(function () {
+        tries += 1;
+        if (window.addProductToCart(product, qty, goCheckout ? false : openDrawer, sourceEl)) {
+            clearInterval(timer);
+            if (goCheckout) finishCheckout();
+        } else if (tries > 50) {
+            clearInterval(timer);
+        }
+    }, 40);
+});
+</script>
+@include('website.partials.promo-popup')
+@stack('scripts')
+</body>
+</html>
